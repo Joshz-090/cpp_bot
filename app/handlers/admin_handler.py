@@ -9,9 +9,11 @@ from telegram.ext import (
     filters,
     CallbackQueryHandler
 )
+from telegram.helpers import escape_markdown
 from ..services.user_service import UserService
 from ..services.quiz_service import QuizService
 from ..models import DifficultyLevel
+from . import question_management_handler as qm
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +51,18 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔧 Manage Questions", callback_data="admin_manage_questions")],
         [InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast")],
         [InlineKeyboardButton("📊 Quiz Leaderboards", callback_data="admin_view_lb")],
+        [InlineKeyboardButton("📋 View Feedbacks", callback_data="admin_view_feedback")],
         [InlineKeyboardButton("📈 View Overall Stats", callback_data="admin_stats")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🛠 Admin Dashboard\nSelect an operation:", reply_markup=reply_markup)
+    
+    msg_text = "🛠 Admin Dashboard\nSelect an operation:"
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(msg_text, reply_markup=reply_markup)
+    else:
+        await update.effective_message.reply_text(msg_text, reply_markup=reply_markup)
+        
     return START_MODE
 
 # --- Broadcast Logic ---
@@ -65,16 +75,21 @@ async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def do_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    users = UserService.get_all_users()
+    # Filter for users with a valid telegram_id up front
+    all_users = UserService.get_all_users()
+    users = [u for u in all_users if u.telegram_id]
+    
     count = 0
     failure = 0
     
-    await update.message.reply_text(f"🚀 Broadcasting to {len(users)} users...")
+    await update.message.reply_text(f"🚀 Broadcasting to {len(users)} active users...")
     
     for user in users:
         try:
             await context.bot.send_message(chat_id=user.telegram_id, text=text)
             count += 1
+            # Add small delay to avoid rate limiting
+            await asyncio.sleep(0.05)
         except Exception as e:
             logger.error(f"Failed to send broadcast to {user.telegram_id}: {e}")
             failure += 1
@@ -179,7 +194,20 @@ async def get_correct_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return await admin_menu(update, context)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operation cancelled.")
+    """Cancel the current operation and return to admin menu."""
+    # Clear any user data that might be lingering
+    keys_to_clear = [
+        'sel_week', 'sel_quiz_id', 'q_text', 'q_options', 'q_answer',
+        'quiz_title', 'quiz_desc', 'quiz_week', 'quiz_duration', 'multi_questions',
+        'current_question_num', 'multi_quiz_id', 'multi_week', 'current_q_data',
+        'mg_week', 'mg_quiz'
+    ]
+    
+    for key in keys_to_clear:
+        if key in context.user_data:
+            del context.user_data[key]
+    
+    await update.message.reply_text("❌ Operation cancelled. Returning to admin menu...")
     return ConversationHandler.END
 
 # --- Multi-Question Addition Logic ---
@@ -407,14 +435,7 @@ async def start_manage_quizzes(update: Update, context: ContextTypes.DEFAULT_TYP
 @admin_only
 async def start_manage_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start question management interface."""
-    query = update.callback_query
-    await query.answer()
-    
-    weeks = [[InlineKeyboardButton(f"Week {i}", callback_data=f"mg_q_week_{i}")] for i in range(1, 16)]
-    weeks.append([InlineKeyboardButton("📋 All Questions", callback_data="mg_q_all")])
-    reply_markup = InlineKeyboardMarkup(weeks)
-    await query.message.reply_text("🔧 *Manage Questions*\nSelect week or view all:", reply_markup=reply_markup, parse_mode="Markdown")
-    return MANAGE_QUESTION_SELECT
+    return await qm.start_manage_questions(update, context)
 
 async def manage_quiz_select_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle week selection for quiz management."""
@@ -602,6 +623,7 @@ async def lb_show_quiz_results(update: Update, context: ContextTypes.DEFAULT_TYP
     
     quiz = QuizService.get_quiz(quiz_id)
     results = QuizService.get_quiz_leaderboard(quiz_id)
+    questions = QuizService.get_quiz_questions(quiz_id)
     
     if not results:
         await query.edit_message_text(f"🏁 No completions for *{quiz.title}* yet.", parse_mode="Markdown")
@@ -609,7 +631,7 @@ async def lb_show_quiz_results(update: Update, context: ContextTypes.DEFAULT_TYP
         return await admin_menu(update, context)
         
     lb_text = f"🏆 *Leaderboard: {quiz.title}* 🏆\n"
-    lb_text += f"📅 Week {quiz.week_number} | 📝 {len(quiz.questions)} Questions\n\n"
+    lb_text += f"📅 Week {quiz.week_number} | 📝 {len(questions)} Questions\n\n"
     
     for i, res in enumerate(results, 1):
         # Format duration as mm:ss
@@ -628,12 +650,37 @@ async def lb_show_quiz_results(update: Update, context: ContextTypes.DEFAULT_TYP
     # Return to menu after a short wait or just stay there? 
     # Let's provide a "Back" button
     keyboard = [[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data="back_to_admin")]]
-    await query.edit_message_reply_markup(InlineKeyboardMarkup(keyboard))
-    return START_MODE
+    await query.edit_message_text(lb_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    return ConversationHandler.END
+
+async def view_feedbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lists all feedback entries."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    
+    feedbacks = UserService.get_all_feedback()
+    if not feedbacks:
+        text = "📋 *No feedback received yet.*"
+        if query:
+            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_admin")]]))
+        else:
+            await update.message.reply_text(text, parse_mode="Markdown")
+        return
+        
+    fb_text = "📋 *Student Feedback*\n\n"
+    for fb in feedbacks[:15]: # Show last 15
+        user_name = escape_markdown(fb.user.nickname or fb.user.full_name or "Unknown", version=1)
+        date = fb.created_at.strftime("%Y-%m-%d %H:%M")
+        fb_text += f"👤 *{user_name}* ({date}):\n{fb.content}\n\n"
+        
+    keyboard = [[InlineKeyboardButton("🔙 Back to Admin", callback_data="back_to_admin")]]
+    if query:
+        await query.message.edit_text(fb_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.message.reply_text(fb_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def back_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await asyncio.sleep(2)
     return await admin_menu(update, context)
 
 # --- Management Helper Functions ---
@@ -643,26 +690,7 @@ async def handle_management_back(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     return await admin_menu(update, context)
 
-async def manage_question_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle question management actions."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("🔧 Question management actions coming soon!")
-    return MANAGE_QUESTION_SELECT
-
-async def edit_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle question editing."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("📝 Question editing coming soon!")
-    return MANAGE_QUESTION_SELECT
-
-async def delete_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle question deletion."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("🗑️ Question deletion coming soon!")
-    return MANAGE_QUESTION_SELECT
+    return await admin_menu(update, context)
 
 async def edit_quiz_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle quiz info editing."""
@@ -692,40 +720,7 @@ async def process_quiz_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("📝 Quiz edit processing coming soon!")
     return MANAGE_QUIZ_ACTION
 
-async def process_question_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process question edit."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("📝 Question edit processing coming soon!")
-    return MANAGE_QUESTION_ACTION
-
-async def process_question_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process question options edit."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("📝 Question options processing coming soon!")
-    return MANAGE_QUESTION_ACTION
-
-async def process_question_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process question answer edit."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("📝 Question answer processing coming soon!")
-    return MANAGE_QUESTION_ACTION
-
-async def confirm_delete_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Confirm quiz deletion."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("🗑️ Quiz deletion confirmation coming soon!")
-    return MANAGE_QUIZ_ACTION
-
-async def confirm_delete_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Confirm question deletion."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("🗑️ Question deletion confirmation coming soon!")
-    return MANAGE_QUESTION_ACTION
+    return await admin_menu(update, context)
 
 # --- Handler Configurations ---
 admin_conv_handler = ConversationHandler(
@@ -739,6 +734,7 @@ admin_conv_handler = ConversationHandler(
             CallbackQueryHandler(start_manage_questions, pattern="^admin_manage_questions$"),
             CallbackQueryHandler(start_broadcast, pattern="^admin_broadcast$"),
             CallbackQueryHandler(start_view_lb, pattern="^admin_view_lb$"),
+            CallbackQueryHandler(view_feedbacks, pattern="^admin_view_feedback$"),
             CallbackQueryHandler(back_to_admin, pattern="^back_to_admin$")
         ],
         MANAGE_QUIZ_SELECT: [
@@ -752,20 +748,31 @@ admin_conv_handler = ConversationHandler(
             CallbackQueryHandler(manage_quiz_questions, pattern="^mg_quiz_questions$"),
             CallbackQueryHandler(handle_management_back, pattern="^mg_quiz_back$")
         ],
-        MANAGE_QUESTION_SELECT: [
-            CallbackQueryHandler(manage_question_actions, pattern="^mg_question_[0-9]"),
-            CallbackQueryHandler(edit_question, pattern="^mg_edit_question$"),
-            CallbackQueryHandler(delete_question, pattern="^mg_delete_question$"),
-            CallbackQueryHandler(handle_management_back, pattern="^mg_q_back$")
+        qm.MG_SELECT_WEEK: [
+            CallbackQueryHandler(qm.list_quizzes, pattern="^mg_q_week_"),
+            CallbackQueryHandler(back_to_admin, pattern="^back_to_admin$")
         ],
-        MANAGE_QUESTION_ACTION: [
-            CallbackQueryHandler(process_quiz_edit, pattern="^mg_edit_quiz_info$"),
-            CallbackQueryHandler(process_question_edit, pattern="^mg_edit_question$"),
-            CallbackQueryHandler(process_question_options, pattern="^mg_edit_question$"),
-            CallbackQueryHandler(process_question_answer, pattern="^mg_edit_question$"),
-            CallbackQueryHandler(confirm_delete_quiz, pattern="^mg_delete_quiz$"),
-            CallbackQueryHandler(confirm_delete_question, pattern="^mg_delete_question$"),
-            CallbackQueryHandler(handle_management_back, pattern="^mg_q_back$")
+        qm.MG_SELECT_QUIZ: [
+            CallbackQueryHandler(qm.list_questions, pattern="^mg_q_quiz_"),
+            CallbackQueryHandler(qm.start_manage_questions, pattern="^admin_manage_questions$")
+        ],
+        qm.MG_SELECT_QUESTION: [
+            CallbackQueryHandler(qm.show_question_details, pattern="^mg_q_item_"),
+            CallbackQueryHandler(qm.list_quizzes, pattern="^mg_q_week_") # Back pattern
+        ],
+        qm.MG_QUESTION_ACTIONS: [
+            CallbackQueryHandler(qm.edit_q_text_start, pattern="^mg_edit_q_text$"),
+            CallbackQueryHandler(qm.edit_q_options_start, pattern="^mg_edit_q_options$"),
+            CallbackQueryHandler(qm.edit_q_answer_start, pattern="^mg_edit_q_answer$"),
+            CallbackQueryHandler(qm.delete_question, pattern="^mg_delete_q$"),
+            CallbackQueryHandler(qm.list_questions, pattern="^mg_q_quiz_") # Back pattern
+        ],
+        qm.EDIT_Q_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, qm.edit_q_text_save)],
+        qm.EDIT_Q_OPTIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, qm.edit_q_options_save)],
+        qm.EDIT_Q_ANSWER: [CallbackQueryHandler(qm.edit_q_answer_save, pattern="^mg_ans_")],
+        qm.CONFIRM_DELETE: [
+            CallbackQueryHandler(qm.confirm_delete, pattern="^mg_confirm_delete$"),
+            CallbackQueryHandler(qm.show_question_details, pattern="^mg_q_item_") # Cancel
         ],
         MULTI_Q_SELECT_QUIZ: [CallbackQueryHandler(multi_select_week, pattern="^multi_week_"), 
                                 CallbackQueryHandler(multi_select_quiz, pattern="^multi_quiz_")],
@@ -784,5 +791,8 @@ admin_conv_handler = ConversationHandler(
         ASK_QUIZ_AVAILABILITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_quiz_availability)],
         BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, do_broadcast)]
     },
-    fallbacks=[CommandHandler("cancel", cancel)]
+    fallbacks=[
+    CommandHandler("cancel", cancel),
+    CommandHandler("admin", admin_menu)
+]
 )

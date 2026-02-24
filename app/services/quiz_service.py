@@ -195,3 +195,54 @@ class QuizService:
                     break
                     
             return leaderboard
+
+    @staticmethod
+    def get_question(question_id: int) -> Optional[Question]:
+        """Fetches a specific question by ID."""
+        with get_session() as session:
+            return session.query(Question).filter(Question.id == question_id).first()
+
+    @staticmethod
+    def update_question(question_id: int, data: dict) -> bool:
+        """Updates a specific question's details."""
+        with get_session() as session:
+            question = session.query(Question).filter(Question.id == question_id).first()
+            if not question:
+                return False
+            
+            if 'question_text' in data:
+                question.question_text = data['question_text']
+            if 'option_a' in data:
+                question.option_a = data['option_a']
+            if 'option_b' in data:
+                question.option_b = data['option_b']
+            if 'option_c' in data:
+                question.option_c = data['option_c']
+            if 'option_d' in data:
+                question.option_d = data['option_d']
+            if 'correct_answer' in data:
+                question.correct_answer = data['correct_answer']
+            if 'difficulty' in data:
+                question.difficulty = data['difficulty']
+            if 'explanation' in data:
+                question.explanation = data['explanation']
+            if 'quiz_id' in data:
+                question.quiz_id = data['quiz_id']
+                
+            session.commit()
+            return True
+
+    @staticmethod
+    def delete_question(question_id: int) -> bool:
+        """Deletes a specific question."""
+        with get_session() as session:
+            question = session.query(Question).filter(Question.id == question_id).first()
+            if not question:
+                return False
+            
+            # Delete associated submissions first to avoid FK constraints issues if any
+            session.query(Submission).filter(Submission.question_id == question_id).delete()
+            
+            session.delete(question)
+            session.commit()
+            return True
