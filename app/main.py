@@ -36,13 +36,16 @@ def main():
     
     application.add_handler(student_handler.quiz_list_handler)
     application.add_handler(student_handler.feedback_conv_handler)
+    application.add_handler(student_handler.course_conv_handler)
+    application.add_handler(student_handler.settings_conv_handler)
     
     # Register global menu handlers for registered students
-    application.add_handler(MessageHandler(filters.Regex('^📊 My Stats$'), student_handler.stats_command))
+    application.add_handler(MessageHandler(filters.Regex('^📊 My Status$'), student_handler.stats_command))
     application.add_handler(MessageHandler(filters.Regex('^🏆 Leaderboard$'), student_handler.leaderboard_command))
     application.add_handler(MessageHandler(filters.Regex('^🔐 Forgot Password$'), student_handler.forgot_password))
     application.add_handler(MessageHandler(filters.Regex('^🚪 Logout$'), student_handler.logout_command))
     application.add_handler(MessageHandler(filters.Regex('^❓ Help$'), student_handler.help_command))
+    application.add_handler(MessageHandler(filters.Regex('^📚 Courses$'), student_handler.show_courses))
     application.add_handler(MessageHandler(filters.Regex('^👤 Edit Profile$'), student_handler.handle_main_menu))
     
     application.add_handler(admin_conv_handler)

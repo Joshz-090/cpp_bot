@@ -5,6 +5,7 @@ from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 from telegram.helpers import escape_markdown
 from ..services.user_service import UserService
 from ..services.quiz_service import QuizService
+from ..services.course_service import CourseService
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,10 @@ START_MODE, ASK_NICKNAME, ASK_PASSWORD, LOGIN_NICKNAME, LOGIN_PASSWORD = range(5
 SELECT_WEEK, SELECT_QUIZ, QUIZ_INFO, QUIZ_QUESTION = range(5, 9)
 # Feedback State
 COLLECT_FEEDBACK = 10
+# Course Selection States
+COURSE_SELECT, WEEK_SELECT, CONTENT_OPTIONS, COURSE_QUIZ_SELECT = range(11, 15)
+# Settings & Delete States
+SETTINGS_MODE, CONFIRM_DELETE = range(15, 17)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /help command."""
@@ -58,18 +63,24 @@ async def quizzes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_registration(update, context):
         return ConversationHandler.END
 
-    weeks = [[InlineKeyboardButton(f"Week {i}", callback_data=f"std_week_{i}")] for i in range(1, 16)]
-    # Chunk buttons for better layout
+    # Standard 12 weeks in a grid
     keyboard = []
-    for i in range(0, 15, 3):
+    for i in range(1, 13, 3):
         keyboard.append([
+            InlineKeyboardButton(f"Week {i}", callback_data=f"std_week_{i}"),
             InlineKeyboardButton(f"Week {i+1}", callback_data=f"std_week_{i+1}"),
-            InlineKeyboardButton(f"Week {i+2}", callback_data=f"std_week_{i+2}"),
-            InlineKeyboardButton(f"Week {i+3}", callback_data=f"std_week_{i+3}")
+            InlineKeyboardButton(f"Week {i+2}", callback_data=f"std_week_{i+2}")
         ])
     
+    # Special categories
+    keyboard.append([
+        InlineKeyboardButton("🎓 Mid Exam", callback_data="std_week_13"),
+        InlineKeyboardButton("🏆 Final Exam", callback_data="std_week_14")
+    ])
+    keyboard.append([InlineKeyboardButton("🤡 Funny Question", callback_data="std_week_15")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📚 *Browse Quizzes*\nSelect a week to see available challenges:", 
+    await update.message.reply_text("📚 *Browse Quizzes*\nSelect a week or category to see available challenges:", 
                                    reply_markup=reply_markup, parse_mode="Markdown")
     return SELECT_WEEK
 
@@ -83,10 +94,12 @@ async def std_select_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"ℹ️ No quizzes available for Week {week} yet. Check back later!")
         return ConversationHandler.END
         
+    week_name = f"Week {week}" if week <= 12 else "Mid Exam" if week == 13 else "Final Exam" if week == 14 else "Funny Question"
+    
     keyboard = [[InlineKeyboardButton(q.title, callback_data=f"std_quiz_{q.id}")] for q in quizzes]
-    keyboard.append([InlineKeyboardButton("⬅️ Back to Weeks", callback_data="back_to_weeks")])
+    keyboard.append([InlineKeyboardButton("⬅️ Back to Categories", callback_data="back_to_weeks")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(f"📅 *Week {week} Quizzes*\nChoose a quiz to view details:", 
+    await query.edit_message_text(f"📅 *{week_name} Quizzes*\nChoose a quiz to view details:", 
                                  reply_markup=reply_markup, parse_mode="Markdown")
     return SELECT_QUIZ
 
@@ -94,18 +107,24 @@ async def show_week_selection(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Show week selection for callback queries (used in navigation)"""
     query = update.callback_query
     
-    weeks = [[InlineKeyboardButton(f"Week {i}", callback_data=f"std_week_{i}")] for i in range(1, 16)]
-    # Chunk buttons for better layout
+    # Standard 12 weeks in a grid
     keyboard = []
-    for i in range(0, 15, 3):
+    for i in range(1, 13, 3):
         keyboard.append([
+            InlineKeyboardButton(f"Week {i}", callback_data=f"std_week_{i}"),
             InlineKeyboardButton(f"Week {i+1}", callback_data=f"std_week_{i+1}"),
-            InlineKeyboardButton(f"Week {i+2}", callback_data=f"std_week_{i+2}"),
-            InlineKeyboardButton(f"Week {i+3}", callback_data=f"std_week_{i+3}")
+            InlineKeyboardButton(f"Week {i+2}", callback_data=f"std_week_{i+2}")
         ])
     
+    # Special categories
+    keyboard.append([
+        InlineKeyboardButton("🎓 Mid Exam", callback_data="std_week_13"),
+        InlineKeyboardButton("🏆 Final Exam", callback_data="std_week_14")
+    ])
+    keyboard.append([InlineKeyboardButton("🤡 Funny Question", callback_data="std_week_15")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("📚 *Browse Quizzes*\nSelect a week to see available challenges:", 
+    await query.edit_message_text("📚 *Browse Quizzes*\nSelect a week or category to see available challenges:", 
                                    reply_markup=reply_markup, parse_mode="Markdown")
     return SELECT_WEEK
 
@@ -338,12 +357,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, nic
         user = UserService.get_user(update.effective_user.id)
         nickname = user.nickname if user else "User"
     
-    # Create main menu keyboard
+    # Create main menu keyboard with exactly 5 categories as requested
     main_keyboard = [
-        ['📝 Take Quiz', '📊 My Stats'],
-        ['🏆 Leaderboard', '💬 Give Feedback'],
-        ['👤 Edit Profile', '🔐 Forgot Password'],
-        ['🚪 Logout', '❓ Help']
+        ['📚 Courses', '📝 Quizzes'],
+        ['📊 My Status', '🏆 Leaderboard'],
+        ['⚙️ Settings']
     ]
     
     esc_nickname = escape_markdown(nickname, version=1)
@@ -359,38 +377,94 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, nic
     )
     return ConversationHandler.END
 
+async def show_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the settings submenu."""
+    from telegram import ReplyKeyboardMarkup
+    settings_keyboard = [
+        ['👤 Edit Profile', '🔐 Forgot Password'],
+        ['🚪 Logout', '🗑️ Delete Account'],
+        ['🔙 Back to Main Menu', '💬 Give Feedback'],
+        ['❓ Help']
+    ]
+    
+    await update.message.reply_text(
+        "⚙️ *Settings*\nManage your profile and account settings:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(settings_keyboard, resize_keyboard=True)
+    )
+    return SETTINGS_MODE
+
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle main menu keyboard choices."""
     choice = update.message.text
     
-    if choice == '📝 Take Quiz':
-        # Trigger quiz functionality
+    if choice == '📝 Quizzes':
         return await quizzes_command(update, context)
-    elif choice == '📊 My Stats':
-        # Trigger stats functionality
+    elif choice == '📊 My Status':
         return await stats_command(update, context)
     elif choice == '🏆 Leaderboard':
-        # Trigger leaderboard functionality
         return await leaderboard_command(update, context)
-    elif choice == '👤 Edit Profile':
-        # Trigger profile edit
-        await update.message.reply_text("👤 *Profile Edit*\n\nThis feature is coming soon! 🚧\n\nFor now, you can contact admin to change your details.", parse_mode="Markdown")
-        return await show_main_menu(update, context)
-    elif choice == '🔐 Forgot Password':
-        # Trigger password recovery
-        return await forgot_password(update, context)
-    elif choice == '🚪 Logout':
-        # Trigger logout
-        return await logout_command(update, context)
-    elif choice == '❓ Help':
-        # Show help
-        return await help_command(update, context)
-    elif choice == '💬 Give Feedback':
-        return await start_feedback(update, context)
+    elif choice == '⚙️ Settings':
+        return await show_settings_menu(update, context)
+    elif choice == '📚 Courses':
+        return await show_courses(update, context)
     else:
-        # Unknown choice
+        # Unknown choice or fallback
         await update.message.reply_text("❓ Please choose one of the options from the menu below:")
         return await show_main_menu(update, context)
+
+async def handle_settings_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle choices within the settings submenu."""
+    choice = update.message.text
+    
+    if choice == '👤 Edit Profile':
+        await update.message.reply_text("👤 *Profile Edit*\n\nThis feature is coming soon! 🚧", parse_mode="Markdown")
+        return SETTINGS_MODE
+    elif choice == '🔐 Forgot Password':
+        await forgot_password(update, context)
+        return SETTINGS_MODE
+    elif choice == '🚪 Logout':
+        await logout_command(update, context)
+        return ConversationHandler.END
+    elif choice == '🗑️ Delete Account':
+        await update.message.reply_text(
+            "⚠️ *CAUTION*: You are about to delete your account.\n\n"
+            "This will permanently erase your score, streak, and history. "
+            "This action *cannot* be undone.\n\n"
+            "Are you sure? Type 'CONFIRM DELETE' to proceed or anything else to go back.",
+            parse_mode="Markdown"
+        )
+        return CONFIRM_DELETE
+    elif choice == '💬 Give Feedback':
+        return await start_feedback(update, context)
+    elif choice == '❓ Help':
+        await help_command(update, context)
+        return SETTINGS_MODE
+    elif choice == '🔙 Back to Main Menu':
+        return await show_main_menu(update, context)
+    else:
+        await update.message.reply_text("❓ Please choose an option from the settings menu:")
+        return await show_settings_menu(update, context)
+
+async def confirm_account_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process the final account deletion confirmation."""
+    text = update.message.text.strip()
+    
+    if text == "CONFIRM DELETE":
+        success = UserService.delete_user_account(update.effective_user.id)
+        if success:
+            from telegram import ReplyKeyboardRemove
+            await update.message.reply_text(
+                "🗑️ *Account Deleted*\nYour data has been erased. Goodbye!", 
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            await update.message.reply_text("❌ *Error*: Could not delete account. Please try again later.")
+        return ConversationHandler.END
+    else:
+        await update.message.reply_text("❌ Deletion aborted. Returning to Settings.")
+        return await show_settings_menu(update, context)
 
 async def choose_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processes the mode selection (New vs Existing)."""
@@ -545,7 +619,7 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("⚠️ An error occurred while processing your answer.")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the /stats command."""
+    """Handles the /stats command with a rich visual layout."""
     if not await check_user_registration(update, context):
         return
     
@@ -554,27 +628,39 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ User not found. Please use /start to register.")
         return
     
-    # Get user statistics
     stats = UserService.get_user_stats(user.id)
     
-    # Calculate badges
-    badge_text = ""
-    if stats.get('total_quizzes', 0) >= 10:
-        badge_text += "🏅 Quiz Master "
-    if stats.get('avg_accuracy', 0) >= 80:
-        badge_text += "🎯 Sharpshooter "
-    if stats.get('streak_count', 0) >= 7:
-        badge_text += "🔥 On Fire "
+    # Progress Bar Calculation
+    xp_in_level = stats.get('xp_in_level', 0)
+    xp_needed = stats.get('xp_needed', 100)
+    filled_length = int(10 * xp_in_level // xp_needed)
+    bar = "▬▬" * filled_length + "▭▭" * (10 - filled_length)
     
+    # Titles based on Level
+    level = stats.get('level', 1)
+    title = "Novice" if level < 5 else "Apprentice" if level < 10 else "Scholar" if level < 20 else "Master"
+    
+    # Badge formatting
+    badges = stats.get('badges', [])
+    badge_text = " ".join(badges) if badges else "None yet 🎖"
+
     stats_msg = (
-        f"📊 *{user.nickname}'s Statistics* 📊\n\n"
-        f"📝 Total Quizzes: {stats.get('total_quizzes', 0)}\n"
-        f"✅ Total Correct: {stats.get('total_correct', 0)}\n"
-        f"🎯 Average Accuracy: {stats.get('avg_accuracy', 0)}%\n"
-        f"⏱ Average Time: {round(stats.get('avg_time', 0), 1)} minutes\n"
-        f"🔥 Current Streak: {stats.get('streak_count', 0)} days\n"
-        f"{badge_text}\n"
-        "Keep up the great work! 🚀"
+        f"📊 *{user.nickname}'s Student Profile* 📊\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 *Rank*: #{stats.get('rank', 'N/A')} | {title}\n"
+        f"🎖 *Level*: {level}\n"
+        f"✨ *XP*: {xp_in_level}/{xp_needed}\n"
+        f"`{bar}`\n\n"
+        f"📈 *Performance Metrics*\n"
+        f"  ├ ✅ Accuracy: {stats.get('avg_accuracy', 0)}%\n"
+        f"  ├ ⏱ Avg Time: {stats.get('avg_time', 0)}m\n"
+        f"  └ 📝 Total Quizzes: {stats.get('total_quizzes', 0)}\n\n"
+        f"🔥 *Consistency*\n"
+        f"  ├ 🔥 Daily Streak: {stats.get('streak_count', 0)} days\n"
+        f"  └ 🏆 Total Score: {user.score} XP\n\n"
+        f"🎖 *Achievements*\n"
+        f"  {badge_text}\n\n"
+        f"🚀 _Keep learning to climb the leaderboard!_"
     )
     
     await update.message.reply_text(stats_msg, parse_mode="Markdown")
@@ -625,11 +711,18 @@ async def cls_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /logout command."""
-    if not await check_user_registration(update, context):
-        return ConversationHandler.END
+    user_id = update.effective_user.id
     
-    # Simple logout
-    await update.message.reply_text("🚪 *Logged Out successfully.*\nUse /start to log back in.", parse_mode="Markdown")
+    # Actually perform the logout in the database
+    UserService.logout_user(user_id)
+    
+    from telegram import ReplyKeyboardRemove
+    await update.message.reply_text(
+        "🚪 *Logged Out successfully.*\nAll personal data access from this session has been restricted.\n\n"
+        "Use /start to log back in or create a new account.", 
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
     return ConversationHandler.END
 
 async def start_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -651,17 +744,193 @@ async def collect_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user:
         UserService.add_feedback(user.id, content)
-        await update.message.reply_text("✅ *Thank you for your feedback!* Your suggestion has been saved.")
+        await update.message.reply_text("✅ *Thank you for your feedback!* Your suggestion has been saved.", parse_mode="Markdown")
     else:
-        await update.message.reply_text("❌ *Error*: User not found. Please log in first.")
+        await update.message.reply_text("❌ *Error*: User not found. Please log in first.", parse_mode="Markdown")
         
     return await show_main_menu(update, context)
 
+# --- Course & Week Menu System ---
+
+async def show_courses(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Level 1: Course Selection Menu"""
+    # Define courses
+    courses = [
+        ("C++", "course_cpp"),
+        ("Python", "course_python"),
+        ("Web Dev", "course_webdev")
+    ]
+    
+    keyboard = []
+    for name, callback_data in courses:
+        keyboard.append([InlineKeyboardButton(name, callback_data=callback_data)])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    msg_text = "📚 *Choose a Course*\nSelect a course below to explore its content:"
+    
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(msg_text, reply_markup=reply_markup, parse_mode="Markdown")
+    
+    return COURSE_SELECT
+
+async def handle_course_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles course selection callback."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    if data == "course_cpp":
+        return await show_weeks(update, context, "C++")
+    else:
+        # Coming soon for other courses
+        await query.message.reply_text("⚠️ *Coming Soon*: This course is currently under development.", parse_mode="Markdown")
+        return COURSE_SELECT
+
+async def show_weeks(update: Update, context: ContextTypes.DEFAULT_TYPE, course_name: str):
+    """Level 2: Week Selection Menu (Weeks 1-12)"""
+    keyboard = []
+    # Grid of 3x4
+    for i in range(1, 13, 3):
+        row = []
+        for j in range(3):
+            week_num = i + j
+            row.append(InlineKeyboardButton(f"Week {week_num}", callback_data=f"week_{week_num}"))
+        keyboard.append(row)
+    
+    keyboard.append([InlineKeyboardButton("🔙 Back to Courses", callback_data="back_to_courses")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    msg_text = f"📚 *{course_name} - Week Selection*\nChoose a week to see the learning materials:"
+    await update.callback_query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode="Markdown")
+    
+    context.user_data['selected_course'] = course_name
+    return WEEK_SELECT
+
+async def handle_week_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles week selection callback."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    if data == "back_to_courses":
+        return await show_courses(update, context)
+        
+    week_num = int(data.split("_")[1])
+    context.user_data['selected_week'] = week_num
+    
+    return await show_content_options(update, context, week_num)
+
+async def show_content_options(update: Update, context: ContextTypes.DEFAULT_TYPE, week_num: int):
+    """Level 3: Content Options for a Week"""
+    course_name = context.user_data.get('selected_course', 'Course')
+    
+    keyboard = [
+        [InlineKeyboardButton("📄 PDF Materials", callback_data="content_pdf")],
+        [InlineKeyboardButton("🎥 Video Lessons", callback_data="content_video")],
+        [InlineKeyboardButton("📝 Test your Potential", callback_data="content_test")],
+        [InlineKeyboardButton("🌐 Learn on Web", callback_data="content_web")],
+        [InlineKeyboardButton("🔙 Back to Weeks", callback_data="back_to_weeks")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    msg_text = f"📘 *{course_name} - Week {week_num}*\n\nSelect an option below to start learning:"
+    await update.callback_query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode="Markdown")
+    return CONTENT_OPTIONS
+
+async def handle_content_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles content type selection (PDF, Video, etc.)."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    if data == "back_to_weeks":
+        course_name = context.user_data.get('selected_course', 'C++')
+        return await show_weeks(update, context, course_name)
+    
+    week_num = context.user_data.get('selected_week')
+    course_name = context.user_data.get('selected_course')
+    
+    course = CourseService.get_course_by_name(course_name)
+    content = CourseService.get_weekly_content(course.id, week_num) if course else None
+    
+    if data == "content_pdf":
+        if content and content.pdf_file_id:
+            try:
+                # Try as file_id first
+                await query.message.reply_document(document=content.pdf_file_id, caption=f"📄 Week {week_num} PDF Materials")
+            except:
+                # Fallback to text link
+                await query.message.reply_text(f"📄 *Week {week_num} PDF Materials*:\n{escape_markdown(content.pdf_file_id)}", parse_mode="Markdown")
+        else:
+            await query.message.reply_text("ℹ️ PDF materials for this week are not yet available.")
+            
+    elif data == "content_video":
+        if content and content.video_link:
+            await query.message.reply_text(f"🎥 *Week {week_num} Video Lesson*:\n{escape_markdown(content.video_link)}", parse_mode="Markdown")
+        else:
+            await query.message.reply_text("ℹ️ Video lessons for this week are not yet available.")
+            
+    elif data == "content_web":
+        if content and content.web_link:
+            await query.message.reply_text(f"🌐 *Learn more on the web*:\n{escape_markdown(content.web_link)}", parse_mode="Markdown")
+        else:
+            # Default or placeholder
+            await query.message.reply_text("🌐 *Explore More*:\nClick here for the recommended web learning platform: [Learn C++ Web](https://example.com)", parse_mode="Markdown")
+            
+    elif data == "content_test":
+        # Integrating real quizzes for the week
+        from ..services.quiz_service import QuizService
+        quizzes = QuizService.get_quizzes_by_week(week_num)
+        
+        if not quizzes:
+            await query.message.reply_text(f"ℹ️ No quizzes available for Week {week_num} yet. Check back later!")
+            return CONTENT_OPTIONS
+            
+        keyboard = [[InlineKeyboardButton(q.title, callback_data=f"std_quiz_{q.id}")] for q in quizzes]
+        keyboard.append([InlineKeyboardButton("🔙 Back to Options", callback_data="back_to_options")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.message.edit_text(f"📝 *{course_name} - Week {week_num} Quizzes*\nChoose a challenge to start:", 
+                                     reply_markup=reply_markup, parse_mode="Markdown")
+        return COURSE_QUIZ_SELECT
+
+    return CONTENT_OPTIONS
+
+async def handle_content_selection_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Navigates back from weekly quiz list to week content options."""
+    query = update.callback_query
+    await query.answer()
+    week_num = context.user_data.get('selected_week')
+    return await show_content_options(update, context, week_num)
+
+async def handle_quiz_info_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Navigates back from quiz info to weekly quiz list."""
+    query = update.callback_query
+    await query.answer()
+    
+    week_num = context.user_data.get('selected_week')
+    course_name = context.user_data.get('selected_course')
+    
+    week_name = f"Week {week_num}" if week_num <= 12 else "Mid Exam" if week_num == 13 else "Final Exam" if week_num == 14 else "Funny Question"
+    
+    quizzes = QuizService.get_quizzes_by_week(week_num)
+    keyboard = [[InlineKeyboardButton(q.title, callback_data=f"std_quiz_{q.id}")] for q in quizzes]
+    keyboard.append([InlineKeyboardButton("🔙 Back to Options", callback_data="back_to_options")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(f"📝 *{course_name} - {week_name} Quizzes*\nChoose a challenge to start:", 
+                                 reply_markup=reply_markup, parse_mode="Markdown")
+    return COURSE_QUIZ_SELECT
+
+# --- Old Quiz Handlers (Kept for /quiz command) ---
 quiz_list_handler = ConversationHandler(
     entry_points=[
         CommandHandler("quizzes", quizzes_command),
         CommandHandler("quiz", quizzes_command),
-        MessageHandler(filters.Regex('^📝 Take Quiz$'), quizzes_command)
+        MessageHandler(filters.Regex('^📝 Quizzes$'), quizzes_command)
     ],
     states={
         SELECT_WEEK: [CallbackQueryHandler(std_select_week, pattern="^std_week_")],
@@ -691,7 +960,10 @@ student_conv_handler = ConversationHandler(
         ASK_NICKNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_nickname)],
         ASK_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, finish_registration)],
         LOGIN_NICKNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_nickname)],
+        LOGIN_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_password)],
         COLLECT_FEEDBACK: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_feedback)],
+        SETTINGS_MODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_settings_choice)],
+        CONFIRM_DELETE: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_account_deletion)],
     },
     fallbacks=[CommandHandler("cancel", cancel_registration)],
     per_message=False
@@ -705,5 +977,44 @@ feedback_conv_handler = ConversationHandler(
         COLLECT_FEEDBACK: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_feedback)],
     },
     fallbacks=[CommandHandler("cancel", cancel_registration)],
+    per_message=False
+)
+
+course_conv_handler = ConversationHandler(
+    entry_points=[
+        MessageHandler(filters.Regex('^📚 Courses$'), show_courses),
+        CommandHandler("courses", show_courses)
+    ],
+    states={
+        COURSE_SELECT: [CallbackQueryHandler(handle_course_selection, pattern="^course_")],
+        WEEK_SELECT: [CallbackQueryHandler(handle_week_selection, pattern="^week_|back_to_courses")],
+        CONTENT_OPTIONS: [CallbackQueryHandler(handle_content_selection, pattern="^content_|back_to_weeks")],
+        COURSE_QUIZ_SELECT: [
+            CallbackQueryHandler(std_quiz_info, pattern="^std_quiz_"),
+            CallbackQueryHandler(handle_content_selection_back, pattern="^back_to_options$")
+        ],
+        QUIZ_INFO: [
+            CallbackQueryHandler(start_timed_quiz, pattern="^start_confirmed$"),
+            CallbackQueryHandler(handle_quiz_info_back, pattern="^std_week_")
+        ],
+        QUIZ_QUESTION: [CallbackQueryHandler(handle_timed_answer, pattern="^t_ans_")]
+    },
+    fallbacks=[CommandHandler("cancel", cancel_registration), CommandHandler("start", start)],
+    per_message=False
+)
+
+settings_conv_handler = ConversationHandler(
+    entry_points=[
+        MessageHandler(filters.Regex('^⚙️ Settings$'), show_settings_menu)
+    ],
+    states={
+        SETTINGS_MODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_settings_choice)],
+        CONFIRM_DELETE: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_account_deletion)],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_registration),
+        CommandHandler("start", start),
+        MessageHandler(filters.Regex('^🔙 Back to Main Menu$'), show_main_menu)
+    ],
     per_message=False
 )

@@ -27,11 +27,26 @@ async def start_manage_questions(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     
-    weeks = [[InlineKeyboardButton(f"Week {i}", callback_data=f"mg_q_week_{i}")] for i in range(1, 16)]
-    # weeks.append([InlineKeyboardButton("📋 All Questions", callback_data="mg_q_all")])
-    weeks.append([InlineKeyboardButton("🏠 Back to Admin", callback_data="back_to_admin")])
+    # Standard 12 weeks in a grid
+    keyboard = []
+    for i in range(1, 13, 3):
+        keyboard.append([
+            InlineKeyboardButton(f"Week {i}", callback_data=f"mg_q_week_{i}"),
+            InlineKeyboardButton(f"Week {i+1}", callback_data=f"mg_q_week_{i+1}"),
+            InlineKeyboardButton(f"Week {i+2}", callback_data=f"mg_q_week_{i+2}")
+        ])
     
-    reply_markup = InlineKeyboardMarkup(weeks)
+    # Special categories
+    keyboard.append([
+        InlineKeyboardButton("🎓 Mid Exam", callback_data="mg_q_week_13"),
+        InlineKeyboardButton("🏆 Final Exam", callback_data="mg_q_week_14")
+    ])
+    keyboard.append([InlineKeyboardButton("🤡 Funny Question", callback_data="mg_q_week_15")])
+    
+    # keyboard.append([InlineKeyboardButton("📋 All Questions", callback_data="mg_q_all")])
+    keyboard.append([InlineKeyboardButton("🏠 Back to Admin", callback_data="back_to_admin")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("🔧 *Manage Questions*\nSelect Week:", reply_markup=reply_markup, parse_mode="Markdown")
     return MG_SELECT_WEEK
 
@@ -62,8 +77,10 @@ async def list_quizzes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(q.title, callback_data=f"mg_q_quiz_{q.id}")] for q in quizzes]
     keyboard.append(get_mg_back_button("admin_manage_questions"))
     
+    week_name = f"Week {week}" if week <= 12 else "Mid Exam" if week == 13 else "Final Exam" if week == 14 else "Funny Question"
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(f"📅 *Week {week} Quizzes*\nSelect Quiz:", reply_markup=reply_markup, parse_mode="Markdown")
+    await query.edit_message_text(f"📅 *{week_name} Quizzes*\nSelect Quiz:", reply_markup=reply_markup, parse_mode="Markdown")
     return MG_SELECT_QUIZ
 
 async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):

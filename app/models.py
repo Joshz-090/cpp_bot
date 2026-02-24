@@ -137,3 +137,22 @@ class Feedback(Base):
 
     def __repr__(self):
         return f"<Feedback(id={self.id}, user_id={self.user_id})>"
+
+class WeeklyContent(Base):
+    __tablename__ = "weekly_content"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
+    week_number = Column(Integer, nullable=False)
+    pdf_file_id = Column(String, nullable=True) # Telegram file_id or link
+    video_link = Column(String, nullable=True)
+    web_link = Column(String, nullable=True)
+    quiz_id = Column(Integer, ForeignKey("quizzes.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    course = relationship("Course")
+    quiz = relationship("Quiz")
+
+    def __repr__(self):
+        return f"<WeeklyContent(id={self.id}, course_id={self.course_id}, week={self.week_number})>"
