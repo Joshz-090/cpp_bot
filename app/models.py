@@ -123,3 +123,17 @@ class QuizAttempt(Base):
 
     def __repr__(self):
         return f"<QuizAttempt(id={self.id}, user_id={self.user_id}, quiz_id={self.quiz_id})>"
+
+class Feedback(Base):
+    __tablename__ = "feedbacks"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User")
+
+    def __repr__(self):
+        return f"<Feedback(id={self.id}, user_id={self.user_id})>"

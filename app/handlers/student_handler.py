@@ -1,6 +1,8 @@
 import logging
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
+from telegram.helpers import escape_markdown
 from ..services.user_service import UserService
 from ..services.quiz_service import QuizService
 
@@ -12,6 +14,8 @@ from telegram.ext import ConversationHandler, MessageHandler, filters
 START_MODE, ASK_NICKNAME, ASK_PASSWORD, LOGIN_NICKNAME, LOGIN_PASSWORD = range(5)
 # Quiz Conversation States
 SELECT_WEEK, SELECT_QUIZ, QUIZ_INFO, QUIZ_QUESTION = range(5, 9)
+# Feedback State
+COLLECT_FEEDBACK = 10
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /help command."""
@@ -140,7 +144,6 @@ async def start_timed_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    from datetime import datetime
     quiz = context.user_data['active_quiz']
     user = UserService.get_or_create_user(update.effective_user.id)
     attempt = QuizService.start_quiz_attempt(user.id, quiz.id)
@@ -162,7 +165,6 @@ async def send_next_quiz_question(update: Update, context: ContextTypes.DEFAULT_
         return await finish_timed_quiz(update, context)
         
     # Check time
-    from datetime import datetime
     total_seconds = (datetime.utcnow() - context.user_data['quiz_start_time']).total_seconds()
     remaining_seconds = max(0, (quiz.duration_minutes * 60) - total_seconds)
     
@@ -217,7 +219,6 @@ async def handle_timed_answer(update: Update, context: ContextTypes.DEFAULT_TYPE
     quiz = context.user_data['active_quiz']
     
     # Strict time check
-    from datetime import datetime
     elapsed = (datetime.utcnow() - context.user_data['quiz_start_time']).total_seconds() / 60
     if elapsed > quiz.duration_minutes:
         await query.edit_message_text("⏰ *Time's up!* This answer was not counted.", parse_mode="Markdown")
@@ -313,12 +314,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     if UserService.is_registered(user.id):
-        await update.message.reply_text(
-            f"🚀 Welcome back, {db_user.nickname}!\n"
-            "You are already registered and ready to go.\n\n"
-            "Use /quiz to start practicing or /stats to see your progress."
-        )
-        return ConversationHandler.END
+        # Show main menu for registered users
+        return await show_main_menu(update, context, db_user.nickname)
 
     reply_keyboard = [['🆕 New Student', '📲 Login (Existing Account)']]
     welcome_msg = (
@@ -332,6 +329,68 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return START_MODE
+
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, nickname=None):
+    """Show the main menu with Reply Keyboard for registered users."""
+    from telegram import ReplyKeyboardMarkup
+    
+    if nickname is None:
+        user = UserService.get_user(update.effective_user.id)
+        nickname = user.nickname if user else "User"
+    
+    # Create main menu keyboard
+    main_keyboard = [
+        ['📝 Take Quiz', '📊 My Stats'],
+        ['🏆 Leaderboard', '💬 Give Feedback'],
+        ['👤 Edit Profile', '🔐 Forgot Password'],
+        ['🚪 Logout', '❓ Help']
+    ]
+    
+    esc_nickname = escape_markdown(nickname, version=1)
+    welcome_msg = (
+        f"👋 Welcome back, *{esc_nickname}*! 👋\n\n"
+        f"🚀 Ready to master C++? Choose an option below:"
+    )
+    
+    await update.message.reply_text(
+        welcome_msg,
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(main_keyboard, resize_keyboard=True)
+    )
+    return ConversationHandler.END
+
+async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle main menu keyboard choices."""
+    choice = update.message.text
+    
+    if choice == '📝 Take Quiz':
+        # Trigger quiz functionality
+        return await quizzes_command(update, context)
+    elif choice == '📊 My Stats':
+        # Trigger stats functionality
+        return await stats_command(update, context)
+    elif choice == '🏆 Leaderboard':
+        # Trigger leaderboard functionality
+        return await leaderboard_command(update, context)
+    elif choice == '👤 Edit Profile':
+        # Trigger profile edit
+        await update.message.reply_text("👤 *Profile Edit*\n\nThis feature is coming soon! 🚧\n\nFor now, you can contact admin to change your details.", parse_mode="Markdown")
+        return await show_main_menu(update, context)
+    elif choice == '🔐 Forgot Password':
+        # Trigger password recovery
+        return await forgot_password(update, context)
+    elif choice == '🚪 Logout':
+        # Trigger logout
+        return await logout_command(update, context)
+    elif choice == '❓ Help':
+        # Show help
+        return await help_command(update, context)
+    elif choice == '💬 Give Feedback':
+        return await start_feedback(update, context)
+    else:
+        # Unknown choice
+        await update.message.reply_text("❓ Please choose one of the options from the menu below:")
+        return await show_main_menu(update, context)
 
 async def choose_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processes the mode selection (New vs Existing)."""
@@ -371,8 +430,9 @@ async def save_nickname(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_NICKNAME
     
     context.user_data['nickname'] = nickname
+    esc_nickname = escape_markdown(nickname, version=1)
     await update.message.reply_text(
-        f"Nice to meet you, *{nickname}*! 😊\n\n"
+        f"Nice to meet you, *{esc_nickname}*! 😊\n\n"
         "2️⃣ *Finally*, please enter the access password to unlock the quizzes:",
         parse_mode="Markdown"
     )
@@ -393,12 +453,13 @@ async def login_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success = UserService.link_account(nickname, password, update.effective_user.id)
     
     if success:
+        esc_nickname = escape_markdown(nickname, version=1)
         await update.message.reply_text(
             f"✅ *Login Successful!* 🎉\n\n"
-            f"Welcome back, {nickname}. Your progress and scores have been transferred to this device.",
+            f"Welcome back, {esc_nickname}. Your progress and scores have been transferred to this device.",
             parse_mode="Markdown"
         )
-        return ConversationHandler.END
+        return await show_main_menu(update, context, nickname)
     else:
         await update.message.reply_text(
             "❌ *Login Failed*\n\n"
@@ -436,7 +497,7 @@ async def finish_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
         "ℹ️ /help - Show available commands"
     )
     await update.message.reply_text(success_msg, parse_mode="Markdown")
-    return ConversationHandler.END
+    return await show_main_menu(update, context, nickname)
 
 async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancels the registration process."""
@@ -487,55 +548,120 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /stats command."""
     if not await check_user_registration(update, context):
         return
-
-    db_user = UserService.get_or_create_user(update.effective_user.id)
     
-    badge_list = db_user.badges.split(',') if db_user.badges else []
-    badges_str = "\n".join([f"  • {b}" for b in badge_list]) if badge_list else "  _None yet_"
-
-    await update.message.reply_text(
-        f"📊 *Your Stats*\n\n"
-        f"👤 Nickname: {db_user.nickname}\n"
-        f"🏆 Score: {db_user.score} points\n"
-        f"🔥 Streak: {db_user.streak_count} days\n\n"
-        f"🎖 *Badges*:\n{badges_str}",
-        parse_mode="Markdown"
+    user = UserService.get_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("❌ User not found. Please use /start to register.")
+        return
+    
+    # Get user statistics
+    stats = UserService.get_user_stats(user.id)
+    
+    # Calculate badges
+    badge_text = ""
+    if stats.get('total_quizzes', 0) >= 10:
+        badge_text += "🏅 Quiz Master "
+    if stats.get('avg_accuracy', 0) >= 80:
+        badge_text += "🎯 Sharpshooter "
+    if stats.get('streak_count', 0) >= 7:
+        badge_text += "🔥 On Fire "
+    
+    stats_msg = (
+        f"📊 *{user.nickname}'s Statistics* 📊\n\n"
+        f"📝 Total Quizzes: {stats.get('total_quizzes', 0)}\n"
+        f"✅ Total Correct: {stats.get('total_correct', 0)}\n"
+        f"🎯 Average Accuracy: {stats.get('avg_accuracy', 0)}%\n"
+        f"⏱ Average Time: {round(stats.get('avg_time', 0), 1)} minutes\n"
+        f"🔥 Current Streak: {stats.get('streak_count', 0)} days\n"
+        f"{badge_text}\n"
+        "Keep up the great work! 🚀"
     )
+    
+    await update.message.reply_text(stats_msg, parse_mode="Markdown")
+    return ConversationHandler.END
 
-# The ConversationHandler for onboarding
-student_conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
-    states={
-        START_MODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_mode)],
-        ASK_NICKNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_nickname)],
-        ASK_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, finish_registration)],
-        LOGIN_NICKNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_nickname)],
-        LOGIN_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_password)],
-    },
-    fallbacks=[CommandHandler("cancel", cancel_registration)],
-    per_message=False
-)
+async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /leaderboard command."""
+    if not await check_user_registration(update, context):
+        return
+    
+    # Get overall leaderboard
+    leaderboard = UserService.get_overall_leaderboard(limit=10)
+    
+    if not leaderboard:
+        await update.message.reply_text("🏆 No quiz data available yet. Be the first to take a quiz!")
+        return
+    
+    lb_text = "🏆 *Overall Leaderboard* 🏆\n\n"
+    
+    for i, user in enumerate(leaderboard, 1):
+        icon = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        streak_icon = " 🔥" if user.get('streak_count', 0) >= 3 else ""
+        lb_text += f"{icon} *{user['nickname']}*{streak_icon}\n"
+        lb_text += f"   └ 📝 {user['total_quizzes']} quizzes | 🎯 {user['avg_accuracy']}% avg\n"
+    
+    lb_text += "\n🚀 _Complete more quizzes to climb the ranks!_"
+    
+    await update.message.reply_text(lb_text, parse_mode="Markdown")
+    return ConversationHandler.END
+
+async def cls_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resets the user session and clears the menu."""
+    from telegram import ReplyKeyboardRemove
+    
+    # Clear session data
+    context.user_data.clear()
+    
+    # Send a clearing message (lots of empty space) followed by reset confirmation
+    # This pushes old messages out of view
+    clearing_text = "\n" * 50 + "🧹 *System Reset Complete*\nSession cleared and menu removed. Use /start to begin again."
+    
+    await update.message.reply_text(
+        clearing_text,
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
 
 async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /logout command."""
     if not await check_user_registration(update, context):
-        return
+        return ConversationHandler.END
     
-    success = UserService.logout_user(update.effective_user.id)
-    if success:
-        await update.message.reply_text(
-            "🔓 *Logged out successfully!*\n\n"
-            "Your Telegram account is no longer linked to your nickname. "
-            "You can now /start to register a new account or login to another one.",
-            parse_mode="Markdown"
-        )
+    # Simple logout
+    await update.message.reply_text("🚪 *Logged Out successfully.*\nUse /start to log back in.", parse_mode="Markdown")
+    return ConversationHandler.END
+
+async def start_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Starts the feedback collection process."""
+    from telegram import ReplyKeyboardRemove
+    await update.message.reply_text(
+        "📝 *Give Feedback*\n\n"
+        "Please share your suggestions, questions, or comments about the course or the bot below.\n"
+        "Type /cancel to abort.",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return COLLECT_FEEDBACK
+
+async def collect_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Collects and saves the feedback."""
+    content = update.message.text.strip()
+    user = UserService.get_user(update.effective_user.id)
+    
+    if user:
+        UserService.add_feedback(user.id, content)
+        await update.message.reply_text("✅ *Thank you for your feedback!* Your suggestion has been saved.")
     else:
-        await update.message.reply_text("❌ Failed to log out. Please try again.")
+        await update.message.reply_text("❌ *Error*: User not found. Please log in first.")
+        
+    return await show_main_menu(update, context)
 
 quiz_list_handler = ConversationHandler(
     entry_points=[
         CommandHandler("quizzes", quizzes_command),
-        CommandHandler("quiz", quizzes_command)
+        CommandHandler("quiz", quizzes_command),
+        MessageHandler(filters.Regex('^📝 Take Quiz$'), quizzes_command)
     ],
     states={
         SELECT_WEEK: [CallbackQueryHandler(std_select_week, pattern="^std_week_")],
@@ -550,5 +676,34 @@ quiz_list_handler = ConversationHandler(
         ],
         QUIZ_QUESTION: [CallbackQueryHandler(handle_timed_answer, pattern="^t_ans_")]
     },
+    fallbacks=[
+        CommandHandler("cancel", cancel_registration),
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
+    ],
+    per_message=False
+)
+
+# The ConversationHandler for onboarding
+student_conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        START_MODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_mode)],
+        ASK_NICKNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_nickname)],
+        ASK_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, finish_registration)],
+        LOGIN_NICKNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_nickname)],
+        COLLECT_FEEDBACK: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_feedback)],
+    },
     fallbacks=[CommandHandler("cancel", cancel_registration)],
+    per_message=False
+)
+
+feedback_conv_handler = ConversationHandler(
+    entry_points=[
+        MessageHandler(filters.Regex('^💬 Give Feedback$'), start_feedback)
+    ],
+    states={
+        COLLECT_FEEDBACK: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_feedback)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel_registration)],
+    per_message=False
 )

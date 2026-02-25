@@ -1,13 +1,13 @@
 import logging
 import os
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from .config import Config
 from .database import init_db
 from .handlers.admin_handler import admin_menu, admin_conv_handler
 from datetime import time
 from .handlers import student_handler
-from .handlers.leaderboard_handler import leaderboard_command, post_weekly_leaderboard
+from .handlers.leaderboard_handler import post_weekly_leaderboard
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -27,13 +27,24 @@ def main():
 
     # Add handlers
     application.add_handler(student_handler.student_conv_handler) # Replaces simple /start
+    application.add_handler(CommandHandler("start", student_handler.start))
+    application.add_handler(CommandHandler("cls", student_handler.cls_command))
     application.add_handler(CommandHandler("help", student_handler.help_command))
-    application.add_handler(CommandHandler("stats", student_handler.stats_command))
     application.add_handler(CommandHandler("forgot", student_handler.forgot_password))
     application.add_handler(CommandHandler("logout", student_handler.logout_command))
-    application.add_handler(CommandHandler("leaderboard", leaderboard_command))
+    application.add_handler(CommandHandler("leaderboard", student_handler.leaderboard_command))  # Use student_handler version
     
     application.add_handler(student_handler.quiz_list_handler)
+    application.add_handler(student_handler.feedback_conv_handler)
+    
+    # Register global menu handlers for registered students
+    application.add_handler(MessageHandler(filters.Regex('^📊 My Stats$'), student_handler.stats_command))
+    application.add_handler(MessageHandler(filters.Regex('^🏆 Leaderboard$'), student_handler.leaderboard_command))
+    application.add_handler(MessageHandler(filters.Regex('^🔐 Forgot Password$'), student_handler.forgot_password))
+    application.add_handler(MessageHandler(filters.Regex('^🚪 Logout$'), student_handler.logout_command))
+    application.add_handler(MessageHandler(filters.Regex('^❓ Help$'), student_handler.help_command))
+    application.add_handler(MessageHandler(filters.Regex('^👤 Edit Profile$'), student_handler.handle_main_menu))
+    
     application.add_handler(admin_conv_handler)
 
     # --- Job Queue - Weekly Leaderboard ---
