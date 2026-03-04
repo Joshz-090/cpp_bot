@@ -137,3 +137,44 @@ class Feedback(Base):
 
     def __repr__(self):
         return f"<Feedback(id={self.id}, user_id={self.user_id})>"
+
+class WeeklyContent(Base):
+    __tablename__ = "weekly_content"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
+    week_number = Column(Integer, nullable=False)
+    pdf_file_id = Column(String, nullable=True) # Telegram file_id or link (legacy)
+    video_link = Column(String, nullable=True) # Legacy single video
+    web_link = Column(String, nullable=True)
+    quiz_id = Column(Integer, ForeignKey("quizzes.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    course = relationship("Course")
+    quiz = relationship("Quiz")
+    pdf_files = relationship("ContentFile", back_populates="weekly_content", 
+                              foreign_keys="ContentFile.weekly_content_id")
+    video_files = relationship("ContentFile", back_populates="weekly_content",
+                              foreign_keys="ContentFile.weekly_content_id")
+
+    def __repr__(self):
+        return f"<WeeklyContent(id={self.id}, course_id={self.course_id}, week={self.week_number})>"
+
+
+class ContentFile(Base):
+    __tablename__ = "content_files"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    weekly_content_id = Column(Integer, ForeignKey("weekly_content.id"), nullable=False)
+    file_type = Column(String, nullable=False)  # 'pdf' or 'video'
+    file_id = Column(String, nullable=True)     # Telegram file_id for PDFs
+    file_url = Column(String, nullable=True)    # URL for videos or external PDFs
+    file_name = Column(String, nullable=True)    # Original filename
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    weekly_content = relationship("WeeklyContent", back_populates="pdf_files")
+    
+    def __repr__(self):
+        return f"<ContentFile(id={self.id}, type={self.file_type}, content_id={self.weekly_content_id})>"

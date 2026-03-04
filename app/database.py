@@ -39,14 +39,17 @@ def init_db():
     # This is safe to run multiple times; it won't recreate existing tables.
     Base.metadata.create_all(bind=engine)
     
-    # Seed default course if empty
+    # Seed default courses
     from .models import Course
     with get_session() as session:
-        if session.query(Course).count() == 0:
-            default_course = Course(
-                name="C++ Foundations",
-                description="Core concepts and syntax of the C++ programming language."
-            )
-            session.add(default_course)
-            session.commit()
-            print("--- Default course 'C++ Foundations' seeded ---")
+        default_courses = [
+            {"name": "C++", "description": "C++ Programming course."},
+            {"name": "Python", "description": "Python Programming course."},
+            {"name": "Web Dev", "description": "Web Development course."}
+        ]
+        for c_data in default_courses:
+            existing = session.query(Course).filter(Course.name == c_data["name"]).first()
+            if not existing:
+                course = Course(name=c_data["name"], description=c_data["description"])
+                session.add(course)
+        session.commit()

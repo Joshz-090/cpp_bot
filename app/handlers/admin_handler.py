@@ -12,17 +12,23 @@ from telegram.ext import (
 from telegram.helpers import escape_markdown
 from ..services.user_service import UserService
 from ..services.quiz_service import QuizService
+from ..services.course_service import CourseService
 from ..models import DifficultyLevel
 from . import question_management_handler as qm
 
 logger = logging.getLogger(__name__)
 
 # --- Conversation States ---
-START_MODE, ASK_TEXT, ASK_OPTIONS, ASK_CORRECT_ANSWER, ASK_COURSE = range(5)
-BROADCAST_MSG = 5
-ASK_QUIZ_TITLE, ASK_QUIZ_DESC, ASK_QUIZ_WEEK, ASK_QUIZ_DURATION, ASK_QUIZ_AVAILABILITY = range(6, 11)
-SELECT_QUIZ_WEEK, SELECT_QUIZ_ID = range(11, 13)
-SELECT_LB_WEEK, SELECT_LB_QUIZ = range(13, 15)
+START_MODE, ASK_TEXT, ASK_OPTIONS, ASK_CORRECT_ANSWER = range(4)
+SELECT_QUIZ_WEEK, SELECT_QUIZ_ID = range(4, 6)
+BROADCAST_MSG = 6
+SELECT_LB_WEEK, SELECT_LB_QUIZ = range(7, 9)
+# Quiz Creation States
+ASK_QUIZ_TITLE, ASK_QUIZ_DESC, ASK_QUIZ_WEEK, ASK_QUIZ_DURATION, ASK_QUIZ_AVAILABILITY = range(10, 15)
+# Content Management States
+MGMT_SELECT_COURSE, MGMT_SELECT_WEEK, MGMT_SELECT_TYPE, MGMT_ASK_VALUE = range(100, 104)
+# Multi-file upload states
+MGMT_COLLECT_FILES, MGMT_FILE_CONFIRMATION = range(104, 106)
 # Multi-question addition states
 MULTI_Q_SELECT_QUIZ, MULTI_Q_COLLECT_QUESTIONS = range(15, 17)
 
@@ -49,6 +55,7 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📝 Create Quiz", callback_data="admin_create_quiz")],
         [InlineKeyboardButton("🔧 Manage Quizzes", callback_data="admin_manage_quizzes")],
         [InlineKeyboardButton("🔧 Manage Questions", callback_data="admin_manage_questions")],
+        [InlineKeyboardButton("📚 Manage Course Content", callback_data="admin_manage_content")],
         [InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast")],
         [InlineKeyboardButton("📊 Quiz Leaderboards", callback_data="admin_view_lb")],
         [InlineKeyboardButton("📋 View Feedbacks", callback_data="admin_view_feedback")],
@@ -104,9 +111,24 @@ async def start_add_question(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     
     # First, choose week
-    weeks = [[InlineKeyboardButton(f"Week {i}", callback_data=f"sel_week_{i}")] for i in range(1, 16)]
-    reply_markup = InlineKeyboardMarkup(weeks)
-    await query.message.reply_text("Select the Week for this question:", reply_markup=reply_markup)
+    # Standard 12 weeks in a grid
+    keyboard = []
+    for i in range(1, 13, 3):
+        keyboard.append([
+            InlineKeyboardButton(f"Week {i}", callback_data=f"sel_week_{i}"),
+            InlineKeyboardButton(f"Week {i+1}", callback_data=f"sel_week_{i+1}"),
+            InlineKeyboardButton(f"Week {i+2}", callback_data=f"sel_week_{i+2}")
+        ])
+    
+    # Special categories
+    keyboard.append([
+        InlineKeyboardButton("🎓 Mid Exam", callback_data="sel_week_13"),
+        InlineKeyboardButton("🏆 Final Exam", callback_data="sel_week_14")
+    ])
+    keyboard.append([InlineKeyboardButton("🤡 Funny Question", callback_data="sel_week_15")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.reply_text("Select the Week or Category for this question:", reply_markup=reply_markup)
     return SELECT_QUIZ_WEEK
 
 async def select_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,9 +244,28 @@ async def start_add_multiple(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['current_question_num'] = 1
     
     # First, select week
-    weeks = [[InlineKeyboardButton(f"Week {i}", callback_data=f"multi_week_{i}")] for i in range(1, 16)]
-    reply_markup = InlineKeyboardMarkup(weeks)
-    await query.message.reply_text("📝 *Add Multiple Questions*\nSelect the Week:", reply_markup=reply_markup, parse_mode="Markdown")
+    # Standard 12 weeks in a grid
+    keyboard = []
+    for i in range(1, 13, 3):
+        keyboard.append([
+            InlineKeyboardButton(f"Week {i}", callback_data=f"multi_week_{i}"),
+            InlineKeyboardButton(f"Week {i+1}", callback_data=f"multi_week_{i+1}"),
+            InlineKeyboardButton(f"Week {i+2}", callback_data=f"multi_week_{i+2}")
+        ])
+    
+    # Special categories
+    keyboard.append([
+        InlineKeyboardButton("🎓 Mid Exam", callback_data="multi_week_13"),
+        InlineKeyboardButton("🏆 Final Exam", callback_data="multi_week_14")
+    ])
+    keyboard.append([InlineKeyboardButton("🤡 Funny Question", callback_data="multi_week_15")])
+    
+    # Ensure nested list is initialized for multi-question addition
+    context.user_data['multi_questions'] = []
+    context.user_data['current_question_num'] = 1
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.reply_text("📝 *Add Multiple Questions*\nSelect the Week or Category:", reply_markup=reply_markup, parse_mode="Markdown")
     return MULTI_Q_SELECT_QUIZ
 
 async def multi_select_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -426,10 +467,26 @@ async def start_manage_quizzes(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     
-    weeks = [[InlineKeyboardButton(f"Week {i}", callback_data=f"mg_quiz_week_{i}")] for i in range(1, 16)]
+    # Standard 12 weeks in a grid
+    keyboard = []
+    for i in range(1, 13, 3):
+        keyboard.append([
+            InlineKeyboardButton(f"Week {i}", callback_data=f"mg_quiz_week_{i}"),
+            InlineKeyboardButton(f"Week {i+1}", callback_data=f"mg_quiz_week_{i+1}"),
+            InlineKeyboardButton(f"Week {i+2}", callback_data=f"mg_quiz_week_{i+2}")
+        ])
+    
+    # Special categories
+    keyboard.append([
+        InlineKeyboardButton("🎓 Mid Exam", callback_data="mg_quiz_week_13"),
+        InlineKeyboardButton("🏆 Final Exam", callback_data="mg_quiz_week_14")
+    ])
+    keyboard.append([InlineKeyboardButton("🤡 Funny Question", callback_data="mg_quiz_week_15")])
+    weeks = keyboard # For consistency with naming below
+    
     weeks.append([InlineKeyboardButton("📋 All Quizzes", callback_data="mg_quiz_all")])
     reply_markup = InlineKeyboardMarkup(weeks)
-    await query.message.reply_text("🔧 *Manage Quizzes*\nSelect week or view all:", reply_markup=reply_markup, parse_mode="Markdown")
+    await query.message.reply_text("🔧 *Manage Quizzes*\nSelect week or category:", reply_markup=reply_markup, parse_mode="Markdown")
     return MANAGE_QUIZ_SELECT
 
 @admin_only
@@ -537,10 +594,13 @@ async def get_quiz_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
         week = int(update.message.text)
         if not 1 <= week <= 15: raise ValueError()
         context.user_data['quiz_week'] = week
-        await update.message.reply_text("Enter the duration for this quiz in minutes (e.g., 15):")
+        await update.message.reply_text(
+            "Enter the duration for this quiz in minutes (e.g., 15):\n\n"
+            "💡 _Note: Week 13=Mid, 14=Final, 15=Funny_"
+        )
         return ASK_QUIZ_DURATION
     except ValueError:
-        await update.message.reply_text("❌ Please enter a valid week number between 1 and 15.")
+        await update.message.reply_text("❌ Please enter a valid number between 1 and 15.\n(1-12=Weeks, 13=Mid, 14=Final, 15=Funny)")
         return ASK_QUIZ_WEEK
 
 async def get_quiz_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -596,9 +656,24 @@ async def start_view_lb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    weeks = [[InlineKeyboardButton(f"Week {i}", callback_data=f"lb_week_{i}")] for i in range(1, 16)]
-    reply_markup = InlineKeyboardMarkup(weeks)
-    await query.message.reply_text("Select Week to view Leaderboards:", reply_markup=reply_markup)
+    # Standard 12 weeks in a grid
+    keyboard = []
+    for i in range(1, 13, 3):
+        keyboard.append([
+            InlineKeyboardButton(f"Week {i}", callback_data=f"lb_week_{i}"),
+            InlineKeyboardButton(f"Week {i+1}", callback_data=f"lb_week_{i+1}"),
+            InlineKeyboardButton(f"Week {i+2}", callback_data=f"lb_week_{i+2}")
+        ])
+    
+    # Special categories
+    keyboard.append([
+        InlineKeyboardButton("🎓 Mid Exam", callback_data="lb_week_13"),
+        InlineKeyboardButton("🏆 Final Exam", callback_data="lb_week_14")
+    ])
+    keyboard.append([InlineKeyboardButton("🤡 Funny Question", callback_data="lb_week_15")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.reply_text("Select Week or Category to view Leaderboards:", reply_markup=reply_markup)
     return SELECT_LB_WEEK
 
 async def lb_select_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -680,6 +755,310 @@ async def view_feedbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(fb_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# --- Content Management Handlers ---
+
+async def start_content_mgmt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin Level 1: Select Course to Manage"""
+    keyboard = [
+        [InlineKeyboardButton("C++", callback_data="mgmt_course_cpp")],
+        [InlineKeyboardButton("Python", callback_data="mgmt_course_python")],
+        [InlineKeyboardButton("Web Dev", callback_data="mgmt_course_webdev")],
+        [InlineKeyboardButton("🔙 Back", callback_data="back_to_admin")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    msg = "📚 *Content Management*\nSelect a course to update its weekly materials:"
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+    return MGMT_SELECT_COURSE
+
+async def mgmt_select_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin Level 2: Select Week to Manage"""
+    query = update.callback_query
+    await query.answer()
+    
+    course_map = {
+        "mgmt_course_cpp": "C++",
+        "mgmt_course_python": "Python",
+        "mgmt_course_webdev": "Web Dev"
+    }
+    course_name = course_map.get(query.data)
+    context.user_data['mgmt_course'] = course_name
+    
+    keyboard = []
+    for i in range(1, 13, 3):
+        row = []
+        for j in range(3):
+            week_num = i + j
+            row.append(InlineKeyboardButton(f"Week {week_num}", callback_data=f"mgmt_week_{week_num}"))
+        keyboard.append(row)
+    
+    # Special categories
+    keyboard.append([
+        InlineKeyboardButton("🎓 Mid Exam", callback_data="mgmt_week_13"),
+        InlineKeyboardButton("🏆 Final Exam", callback_data="mgmt_week_14")
+    ])
+    keyboard.append([InlineKeyboardButton("🤡 Funny Question", callback_data="mgmt_week_15")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Back to Courses", callback_data="admin_manage_content")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(f"📚 *{course_name} Management*\nSelect the week you want to update:", 
+                                reply_markup=reply_markup, parse_mode="Markdown")
+    return MGMT_SELECT_WEEK
+
+async def mgmt_select_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin Level 3: Select Content Type (PDF, Video, etc.)"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "admin_manage_content":
+        return await start_content_mgmt(update, context)
+        
+    week_num = int(query.data.split("_")[2])
+    context.user_data['mgmt_week'] = week_num
+    course_name = context.user_data.get('mgmt_course')
+    
+    keyboard = [
+        [InlineKeyboardButton("📄 Add Multiple PDFs", callback_data="mgmt_type_multi_pdf")],
+        [InlineKeyboardButton("🎥 Add Multiple Videos", callback_data="mgmt_type_multi_video")],
+        [InlineKeyboardButton("📄 Update Single PDF (Legacy)", callback_data="mgmt_type_pdf")],
+        [InlineKeyboardButton("🎥 Update Single Video (Legacy)", callback_data="mgmt_type_video")],
+        [InlineKeyboardButton("🌐 Update Web Link", callback_data="mgmt_type_web")],
+        [InlineKeyboardButton("📋 View Current Files", callback_data="mgmt_view_files")],
+        [InlineKeyboardButton("🔙 Back to Weeks", callback_data=f"mgmt_course_{course_name.lower()}")],
+        [InlineKeyboardButton("🏁 Done", callback_data="back_to_admin")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(f"📘 *{course_name} - Week {week_num} Management*\nWhat would you like to update?",
+                                reply_markup=reply_markup, parse_mode="Markdown")
+    return MGMT_SELECT_TYPE
+
+async def mgmt_ask_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin Level 4: Ask for the new value"""
+    query = update.callback_query
+    await query.answer()
+    
+    type_map = {
+        "mgmt_type_pdf": ("pdf_file_id", "Please send the new PDF file ID or URL:"),
+        "mgmt_type_video": ("video_link", "Please send the new Video URL:"),
+        "mgmt_type_web": ("web_link", "Please send the new Web Link:"),
+        "mgmt_type_multi_pdf": ("multi_pdf", "Send PDF files one by one. Type 'DONE' when finished:"),
+        "mgmt_type_multi_video": ("multi_video", "Send video URLs one by one. Type 'DONE' when finished:")
+    }
+    
+    field, prompt = type_map.get(query.data)
+    context.user_data['mgmt_field'] = field
+    
+    await query.edit_message_text(f"*Updating {field.replace('_', ' ').title()}*\n\n{prompt}\nType /cancel to abort.", 
+                                parse_mode="Markdown")
+    return MGMT_ASK_VALUE
+
+async def mgmt_save_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Saves the new value for single file updates"""
+    new_value = update.message.text.strip()
+    field = context.user_data.get('mgmt_field')
+    course_name = context.user_data.get('mgmt_course')
+    week_num = context.user_data.get('mgmt_week')
+    
+    # Handle multi-file collection
+    if field in ["multi_pdf", "multi_video"]:
+        return await handle_multi_file_collection(update, context, new_value, field)
+    
+    course = CourseService.get_course_by_name(course_name)
+    if not course:
+        await update.message.reply_text("Error: Course not found in database.")
+        return await admin_menu(update, context)
+        
+    CourseService.update_weekly_content(course.id, week_num, **{field: new_value})
+    
+    await update.message.reply_text(f"*Success!* {field.replace('_', ' ').title()} updated for {course_name} Week {week_num}.",
+                                    parse_mode="Markdown")
+    
+    # Return to type selection for same week
+    return await mgmt_select_type_internal(update, context, week_num, course_name)
+
+async def mgmt_save_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Saves the file_id of a sent document"""
+    document = update.message.document
+    field = context.user_data.get('mgmt_field')
+    course_name = context.user_data.get('mgmt_course')
+    week_num = context.user_data.get('mgmt_week')
+    
+    # Handle multi-file PDF collection
+    if field == "multi_pdf":
+        return await handle_multi_file_collection(update, context, "", field)
+    
+    if field != "pdf_file_id":
+        await update.message.reply_text("⚠️ This field expects a link (text), not a file. Please send a text message or /cancel.", parse_mode="Markdown")
+        return MGMT_ASK_VALUE
+        
+    file_id = document.file_id
+    
+    course = CourseService.get_course_by_name(course_name)
+    if not course:
+        await update.message.reply_text("❌ Error: Course not found in database.")
+        return await admin_menu(update, context)
+        
+    CourseService.update_weekly_content(course.id, week_num, **{field: file_id})
+    
+    await update.message.reply_text(f"✅ *Success!* PDF File saved for {course_name} Week {week_num}.\n\n(ID: `{file_id}`)",
+                                    parse_mode="Markdown")
+    
+    # Return to type selection for same week
+    return await mgmt_select_type_internal(update, context, week_num, course_name)
+
+async def mgmt_select_type_internal(update: Update, context: ContextTypes.DEFAULT_TYPE, week_num, course_name):
+    keyboard = [
+        [InlineKeyboardButton("📄 Update PDF (Link/ID)", callback_data="mgmt_type_pdf")],
+        [InlineKeyboardButton("🎥 Update Video Link", callback_data="mgmt_type_video")],
+        [InlineKeyboardButton("🌐 Update Web Link", callback_data="mgmt_type_web")],
+        [InlineKeyboardButton("🔙 Back to Weeks", callback_data=f"mgmt_course_{course_name.lower()}")],
+        [InlineKeyboardButton("🏁 Done", callback_data="back_to_admin")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(f"📘 *{course_name} - Week {week_num} Management*\nWhat else would you like to update?",
+                                reply_markup=reply_markup, parse_mode="Markdown")
+    return MGMT_SELECT_TYPE
+
+async def handle_multi_file_collection(update: Update, context: ContextTypes.DEFAULT_TYPE, new_value: str, field: str):
+    """Handles collection of multiple files"""
+    if new_value.upper() == "DONE":
+        return await finish_multi_file_upload(update, context, field)
+    
+    course_name = context.user_data.get('mgmt_course')
+    week_num = context.user_data.get('mgmt_week')
+    course = CourseService.get_course_by_name(course_name)
+    
+    if not course:
+        await update.message.reply_text("❌ Error: Course not found in database.")
+        return await admin_menu(update, context)
+    
+    # Store files in context
+    if 'collected_files' not in context.user_data:
+        context.user_data['collected_files'] = []
+    
+    file_type = "pdf" if field == "multi_pdf" else "video"
+    
+    if field == "multi_pdf":
+        # Handle PDF document upload
+        if update.message.document:
+            file_id = update.message.document.file_id
+            file_name = update.message.document.file_name
+            context.user_data['collected_files'].append({
+                'type': file_type,
+                'file_id': file_id,
+                'file_name': file_name
+            })
+            await update.message.reply_text(f"✅ PDF '{file_name}' added. Send another PDF or type 'DONE' to finish.")
+        else:
+            await update.message.reply_text("⚠️ Please send a PDF file, not text. Type 'DONE' when finished.")
+    else:  # multi_video
+        # Handle video URL
+        context.user_data['collected_files'].append({
+            'type': file_type,
+            'file_url': new_value,
+            'file_name': f"Video_{len(context.user_data['collected_files']) + 1}"
+        })
+        await update.message.reply_text(f"✅ Video URL added. Send another URL or type 'DONE' to finish.")
+    
+    return MGMT_COLLECT_FILES
+
+
+async def finish_multi_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE, field: str):
+    """Finishes the multi-file upload process"""
+    collected_files = context.user_data.get('collected_files', [])
+    if not collected_files:
+        await update.message.reply_text("❌ No files were added. Please try again.")
+        return await mgmt_select_type_internal(update, context, 
+                                              context.user_data.get('mgmt_week'), 
+                                              context.user_data.get('mgmt_course'))
+    
+    course_name = context.user_data.get('mgmt_course')
+    week_num = context.user_data.get('mgmt_week')
+    course = CourseService.get_course_by_name(course_name)
+    
+    if not course:
+        await update.message.reply_text("❌ Error: Course not found in database.")
+        return await admin_menu(update, context)
+    
+    # Save all files to database
+    saved_count = 0
+    for file_data in collected_files:
+        CourseService.add_content_file(
+            course_id=course.id,
+            week_number=week_num,
+            file_type=file_data['type'],
+            file_id=file_data.get('file_id'),
+            file_url=file_data.get('file_url'),
+            file_name=file_data.get('file_name')
+        )
+        saved_count += 1
+    
+    # Clear collected files
+    context.user_data['collected_files'] = []
+    
+    file_type = "PDFs" if field == "multi_pdf" else "Videos"
+    await update.message.reply_text(f"✅ *Success!* {saved_count} {file_type} saved for {course_name} Week {week_num}.",
+                                    parse_mode="Markdown")
+    
+    # Return to type selection for same week
+    return await mgmt_select_type_internal(update, context, week_num, course_name)
+
+
+async def mgmt_view_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows current files for the selected week"""
+    query = update.callback_query
+    await query.answer()
+    
+    course_name = context.user_data.get('mgmt_course')
+    week_num = context.user_data.get('mgmt_week')
+    course = CourseService.get_course_by_name(course_name)
+    
+    if not course:
+        await query.edit_message_text("❌ Error: Course not found in database.")
+        return await admin_menu(update, context)
+    
+    files = CourseService.list_content_files(course.id, week_num)
+    
+    if not files:
+        await query.edit_message_text(f"📂 *No files found* for {course_name} Week {week_num}.\n\nAdd some files using the options below!",
+                                     parse_mode="Markdown")
+        return await mgmt_select_type_internal(update, context, week_num, course_name)
+    
+    # Format file list
+    file_text = f"📂 *Files for {course_name} Week {week_num}*\n\n"
+    
+    pdf_files = [f for f in files if f.file_type == 'pdf']
+    video_files = [f for f in files if f.file_type == 'video']
+    
+    if pdf_files:
+        file_text += "📄 *PDFs:*\n"
+        for i, pdf in enumerate(pdf_files, 1):
+            name = pdf.file_name or f"PDF_{i}"
+            file_text += f"  {i}. {name}\n"
+        file_text += "\n"
+    
+    if video_files:
+        file_text += "🎥 *Videos:*\n"
+        for i, video in enumerate(video_files, 1):
+            name = video.file_name or f"Video_{i}"
+            file_text += f"  {i}. {name}\n"
+        file_text += "\n"
+    
+    file_text += f"Total: {len(files)} files"
+    
+    keyboard = [[InlineKeyboardButton("🔙 Back to Management", callback_data=f"mgmt_course_{course_name.lower()}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(file_text, reply_markup=reply_markup, parse_mode="Markdown")
+    return MGMT_SELECT_TYPE
+
+
 async def back_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await admin_menu(update, context)
 
@@ -735,7 +1114,23 @@ admin_conv_handler = ConversationHandler(
             CallbackQueryHandler(start_broadcast, pattern="^admin_broadcast$"),
             CallbackQueryHandler(start_view_lb, pattern="^admin_view_lb$"),
             CallbackQueryHandler(view_feedbacks, pattern="^admin_view_feedback$"),
+            CallbackQueryHandler(start_content_mgmt, pattern="^admin_manage_content$"),
             CallbackQueryHandler(back_to_admin, pattern="^back_to_admin$")
+        ],
+        MGMT_SELECT_COURSE: [CallbackQueryHandler(mgmt_select_week, pattern="^mgmt_course_"),
+                             CallbackQueryHandler(back_to_admin, pattern="^back_to_admin$")],
+        MGMT_SELECT_WEEK: [CallbackQueryHandler(mgmt_select_type, pattern="^mgmt_week_|admin_manage_content")],
+        MGMT_SELECT_TYPE: [CallbackQueryHandler(mgmt_ask_value, pattern="^mgmt_type_"),
+                             CallbackQueryHandler(mgmt_view_files, pattern="^mgmt_view_files$"),
+                             CallbackQueryHandler(mgmt_select_week, pattern="^mgmt_course_"),
+                             CallbackQueryHandler(back_to_admin, pattern="^back_to_admin$")],
+        MGMT_ASK_VALUE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, mgmt_save_value),
+            MessageHandler(filters.Document.PDF, mgmt_save_document)
+        ],
+        MGMT_COLLECT_FILES: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, mgmt_save_value),
+            MessageHandler(filters.Document.PDF, mgmt_save_document)
         ],
         MANAGE_QUIZ_SELECT: [
             CallbackQueryHandler(manage_quiz_select_week, pattern="^mg_quiz_week_|mg_quiz_all$"),

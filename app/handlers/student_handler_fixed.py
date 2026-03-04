@@ -940,33 +940,6 @@ async def handle_content_selection(update: Update, context: ContextTypes.DEFAULT
         
     return CONTENT_OPTIONS
 
-async def handle_content_selection_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Navigates back from weekly quiz list to week content options."""
-    query = update.callback_query
-    await query.answer()
-    week_num = context.user_data.get('selected_week')
-    return await show_content_options(update, context, week_num)
-
-
-async def handle_quiz_info_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Navigates back from quiz info to weekly quiz list."""
-    query = update.callback_query
-    await query.answer()
-    
-    week_num = context.user_data.get('selected_week')
-    course_name = context.user_data.get('selected_course')
-    
-    week_name = f"Week {week_num}" if week_num <= 12 else "Mid Exam" if week_num == 13 else "Final Exam" if week_num == 14 else "Funny Question"
-    
-    quizzes = QuizService.get_quizzes_by_week(week_num)
-    keyboard = [[InlineKeyboardButton(q.title, callback_data=f"std_quiz_{q.id}")] for q in quizzes]
-    keyboard.append([InlineKeyboardButton("🔙 Back to Options", callback_data="back_to_options")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(f"📝 *{course_name} - {week_name} Quizzes*\nChoose a challenge to start:", 
-                                 reply_markup=reply_markup, parse_mode="Markdown")
-    return COURSE_QUIZ_SELECT
-
 async def handle_individual_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles selection of individual PDF or video file"""
     query = update.callback_query

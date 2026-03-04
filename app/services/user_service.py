@@ -213,12 +213,26 @@ class UserService:
                 if times:
                     avg_time = sum(times) / len(times)
 
+            # Level Calculation (100 XP per level)
+            score = user.score or 0
+            level = 1 + (score // 100)
+            xp_in_level = score % 100
+            xp_needed = 100
+            
+            # Rank Calculation
+            rank = session.query(func.count(User.id)).filter(User.score > score).scalar() + 1
+
             return {
+                'level': level,
+                'xp_in_level': xp_in_level,
+                'xp_needed': xp_needed,
+                'rank': rank,
                 'total_quizzes': total_quizzes,
                 'total_correct': total_correct,
                 'avg_accuracy': round(avg_accuracy, 1),
                 'avg_time': round(avg_time, 1),
-                'streak_count': user.streak_count
+                'streak_count': user.streak_count,
+                'badges': user.badges.split(',') if user.badges else []
             }
 
     @staticmethod
@@ -251,3 +265,22 @@ class UserService:
         """Returns all feedback entries, ordered by newest first."""
         with get_session() as session:
             return session.query(Feedback).options(joinedload(Feedback.user)).order_by(Feedback.created_at.desc()).all()
+
+    @staticmethod
+    def delete_user_account(telegram_id: int) -> bool:
+        """Permanently deletes a user and all associated data."""
+        with get_session() as session:
+            user = session.query(User).filter(User.telegram_id == telegram_id).first()
+            if not user:
+                return False
+            
+            # Delete associated data first (cascading cleanup)
+            from ..models import Submission, QuizAttempt, Feedback
+            session.query(Submission).filter(Submission.user_id == user.id).delete()
+            session.query(QuizAttempt).filter(QuizAttempt.user_id == user.id).delete()
+            session.query(Feedback).filter(Feedback.user_id == user.id).delete()
+            
+            # Delete the user record
+            session.delete(user)
+            session.commit()
+            return True
