@@ -66,20 +66,22 @@ def main():
     # --- Polling vs Webhook ---
     if Config.ENV == "production":
         # PRODUCTION: Webhook setup
-        # Note: In production, you typically need a URL and port (e.g., from Render)
-        PORT = int(os.environ.get("PORT", "8443"))
-        WEBHOOK_URL = os.environ.get("WEBHOOK_URL") 
+        PORT = Config.PORT
+        WEBHOOK_URL = Config.WEBHOOK_URL
         
         if not WEBHOOK_URL:
             logger.warning("WEBHOOK_URL not set, falling back to polling.")
             application.run_polling()
         else:
             logger.info(f"Starting in WEBHOOK mode on port {PORT}")
+            # Ensure URL has no trailing slash for consistency
+            base_url = WEBHOOK_URL.rstrip('/')
             application.run_webhook(
                 listen="0.0.0.0",
                 port=PORT,
                 url_path=Config.BOT_TOKEN,
-                webhook_url=f"{WEBHOOK_URL}/{Config.BOT_TOKEN}"
+                webhook_url=f"{base_url}/{Config.BOT_TOKEN}",
+                secret_token=Config.WEBHOOK_SECRET
             )
     else:
         # DEVELOPMENT: Polling

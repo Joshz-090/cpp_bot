@@ -10,6 +10,9 @@ class Config:
     ENV = os.getenv("ENV", "development")
     LEADERBOARD_CHANNEL_ID = os.getenv("LEADERBOARD_CHANNEL_ID")
     STUDENT_ACCESS_PASSWORD = os.getenv("STUDENT_ACCESS_PASSWORD", "cpp123")
+    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+    PORT = int(os.getenv("PORT", "8443"))
     
     @classmethod
     def validate(cls):
@@ -18,5 +21,5 @@ class Config:
         if not cls.DATABASE_URL:
             raise ValueError("DATABASE_URL is missing! Please set it in the .env file.")
 
-# Validate configuration on import
+# Validate configuration on    adf import
 Config.validate()

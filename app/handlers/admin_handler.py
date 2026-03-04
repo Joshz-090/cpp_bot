@@ -27,6 +27,8 @@ SELECT_LB_WEEK, SELECT_LB_QUIZ = range(7, 9)
 ASK_QUIZ_TITLE, ASK_QUIZ_DESC, ASK_QUIZ_WEEK, ASK_QUIZ_DURATION, ASK_QUIZ_AVAILABILITY = range(10, 15)
 # Content Management States
 MGMT_SELECT_COURSE, MGMT_SELECT_WEEK, MGMT_SELECT_TYPE, MGMT_ASK_VALUE = range(100, 104)
+# Multi-file upload states
+MGMT_COLLECT_FILES, MGMT_FILE_CONFIRMATION = range(104, 106)
 # Multi-question addition states
 MULTI_Q_SELECT_QUIZ, MULTI_Q_COLLECT_QUESTIONS = range(15, 17)
 
@@ -820,9 +822,12 @@ async def mgmt_select_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     course_name = context.user_data.get('mgmt_course')
     
     keyboard = [
-        [InlineKeyboardButton("📄 Update PDF (Link/ID)", callback_data="mgmt_type_pdf")],
-        [InlineKeyboardButton("🎥 Update Video Link", callback_data="mgmt_type_video")],
+        [InlineKeyboardButton("📄 Add Multiple PDFs", callback_data="mgmt_type_multi_pdf")],
+        [InlineKeyboardButton("🎥 Add Multiple Videos", callback_data="mgmt_type_multi_video")],
+        [InlineKeyboardButton("📄 Update Single PDF (Legacy)", callback_data="mgmt_type_pdf")],
+        [InlineKeyboardButton("🎥 Update Single Video (Legacy)", callback_data="mgmt_type_video")],
         [InlineKeyboardButton("🌐 Update Web Link", callback_data="mgmt_type_web")],
+        [InlineKeyboardButton("📋 View Current Files", callback_data="mgmt_view_files")],
         [InlineKeyboardButton("🔙 Back to Weeks", callback_data=f"mgmt_course_{course_name.lower()}")],
         [InlineKeyboardButton("🏁 Done", callback_data="back_to_admin")]
     ]
@@ -840,31 +845,37 @@ async def mgmt_ask_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     type_map = {
         "mgmt_type_pdf": ("pdf_file_id", "Please send the new PDF file ID or URL:"),
         "mgmt_type_video": ("video_link", "Please send the new Video URL:"),
-        "mgmt_type_web": ("web_link", "Please send the new Web Link:")
+        "mgmt_type_web": ("web_link", "Please send the new Web Link:"),
+        "mgmt_type_multi_pdf": ("multi_pdf", "Send PDF files one by one. Type 'DONE' when finished:"),
+        "mgmt_type_multi_video": ("multi_video", "Send video URLs one by one. Type 'DONE' when finished:")
     }
     
     field, prompt = type_map.get(query.data)
     context.user_data['mgmt_field'] = field
     
-    await query.edit_message_text(f"✏️ *Updating {field.replace('_', ' ').title()}*\n\n{prompt}\nType /cancel to abort.", 
+    await query.edit_message_text(f"*Updating {field.replace('_', ' ').title()}*\n\n{prompt}\nType /cancel to abort.", 
                                 parse_mode="Markdown")
     return MGMT_ASK_VALUE
 
 async def mgmt_save_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Saves the new value to the database"""
+    """Saves the new value for single file updates"""
     new_value = update.message.text.strip()
     field = context.user_data.get('mgmt_field')
     course_name = context.user_data.get('mgmt_course')
     week_num = context.user_data.get('mgmt_week')
     
+    # Handle multi-file collection
+    if field in ["multi_pdf", "multi_video"]:
+        return await handle_multi_file_collection(update, context, new_value, field)
+    
     course = CourseService.get_course_by_name(course_name)
     if not course:
-        await update.message.reply_text("❌ Error: Course not found in database.")
+        await update.message.reply_text("Error: Course not found in database.")
         return await admin_menu(update, context)
         
     CourseService.update_weekly_content(course.id, week_num, **{field: new_value})
     
-    await update.message.reply_text(f"✅ *Success!* {field.replace('_', ' ').title()} updated for {course_name} Week {week_num}.",
+    await update.message.reply_text(f"*Success!* {field.replace('_', ' ').title()} updated for {course_name} Week {week_num}.",
                                     parse_mode="Markdown")
     
     # Return to type selection for same week
@@ -876,6 +887,10 @@ async def mgmt_save_document(update: Update, context: ContextTypes.DEFAULT_TYPE)
     field = context.user_data.get('mgmt_field')
     course_name = context.user_data.get('mgmt_course')
     week_num = context.user_data.get('mgmt_week')
+    
+    # Handle multi-file PDF collection
+    if field == "multi_pdf":
+        return await handle_multi_file_collection(update, context, "", field)
     
     if field != "pdf_file_id":
         await update.message.reply_text("⚠️ This field expects a link (text), not a file. Please send a text message or /cancel.", parse_mode="Markdown")
@@ -909,6 +924,140 @@ async def mgmt_select_type_internal(update: Update, context: ContextTypes.DEFAUL
     await update.message.reply_text(f"📘 *{course_name} - Week {week_num} Management*\nWhat else would you like to update?",
                                 reply_markup=reply_markup, parse_mode="Markdown")
     return MGMT_SELECT_TYPE
+
+async def handle_multi_file_collection(update: Update, context: ContextTypes.DEFAULT_TYPE, new_value: str, field: str):
+    """Handles collection of multiple files"""
+    if new_value.upper() == "DONE":
+        return await finish_multi_file_upload(update, context, field)
+    
+    course_name = context.user_data.get('mgmt_course')
+    week_num = context.user_data.get('mgmt_week')
+    course = CourseService.get_course_by_name(course_name)
+    
+    if not course:
+        await update.message.reply_text("❌ Error: Course not found in database.")
+        return await admin_menu(update, context)
+    
+    # Store files in context
+    if 'collected_files' not in context.user_data:
+        context.user_data['collected_files'] = []
+    
+    file_type = "pdf" if field == "multi_pdf" else "video"
+    
+    if field == "multi_pdf":
+        # Handle PDF document upload
+        if update.message.document:
+            file_id = update.message.document.file_id
+            file_name = update.message.document.file_name
+            context.user_data['collected_files'].append({
+                'type': file_type,
+                'file_id': file_id,
+                'file_name': file_name
+            })
+            await update.message.reply_text(f"✅ PDF '{file_name}' added. Send another PDF or type 'DONE' to finish.")
+        else:
+            await update.message.reply_text("⚠️ Please send a PDF file, not text. Type 'DONE' when finished.")
+    else:  # multi_video
+        # Handle video URL
+        context.user_data['collected_files'].append({
+            'type': file_type,
+            'file_url': new_value,
+            'file_name': f"Video_{len(context.user_data['collected_files']) + 1}"
+        })
+        await update.message.reply_text(f"✅ Video URL added. Send another URL or type 'DONE' to finish.")
+    
+    return MGMT_COLLECT_FILES
+
+
+async def finish_multi_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE, field: str):
+    """Finishes the multi-file upload process"""
+    collected_files = context.user_data.get('collected_files', [])
+    if not collected_files:
+        await update.message.reply_text("❌ No files were added. Please try again.")
+        return await mgmt_select_type_internal(update, context, 
+                                              context.user_data.get('mgmt_week'), 
+                                              context.user_data.get('mgmt_course'))
+    
+    course_name = context.user_data.get('mgmt_course')
+    week_num = context.user_data.get('mgmt_week')
+    course = CourseService.get_course_by_name(course_name)
+    
+    if not course:
+        await update.message.reply_text("❌ Error: Course not found in database.")
+        return await admin_menu(update, context)
+    
+    # Save all files to database
+    saved_count = 0
+    for file_data in collected_files:
+        CourseService.add_content_file(
+            course_id=course.id,
+            week_number=week_num,
+            file_type=file_data['type'],
+            file_id=file_data.get('file_id'),
+            file_url=file_data.get('file_url'),
+            file_name=file_data.get('file_name')
+        )
+        saved_count += 1
+    
+    # Clear collected files
+    context.user_data['collected_files'] = []
+    
+    file_type = "PDFs" if field == "multi_pdf" else "Videos"
+    await update.message.reply_text(f"✅ *Success!* {saved_count} {file_type} saved for {course_name} Week {week_num}.",
+                                    parse_mode="Markdown")
+    
+    # Return to type selection for same week
+    return await mgmt_select_type_internal(update, context, week_num, course_name)
+
+
+async def mgmt_view_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows current files for the selected week"""
+    query = update.callback_query
+    await query.answer()
+    
+    course_name = context.user_data.get('mgmt_course')
+    week_num = context.user_data.get('mgmt_week')
+    course = CourseService.get_course_by_name(course_name)
+    
+    if not course:
+        await query.edit_message_text("❌ Error: Course not found in database.")
+        return await admin_menu(update, context)
+    
+    files = CourseService.list_content_files(course.id, week_num)
+    
+    if not files:
+        await query.edit_message_text(f"📂 *No files found* for {course_name} Week {week_num}.\n\nAdd some files using the options below!",
+                                     parse_mode="Markdown")
+        return await mgmt_select_type_internal(update, context, week_num, course_name)
+    
+    # Format file list
+    file_text = f"📂 *Files for {course_name} Week {week_num}*\n\n"
+    
+    pdf_files = [f for f in files if f.file_type == 'pdf']
+    video_files = [f for f in files if f.file_type == 'video']
+    
+    if pdf_files:
+        file_text += "📄 *PDFs:*\n"
+        for i, pdf in enumerate(pdf_files, 1):
+            name = pdf.file_name or f"PDF_{i}"
+            file_text += f"  {i}. {name}\n"
+        file_text += "\n"
+    
+    if video_files:
+        file_text += "🎥 *Videos:*\n"
+        for i, video in enumerate(video_files, 1):
+            name = video.file_name or f"Video_{i}"
+            file_text += f"  {i}. {name}\n"
+        file_text += "\n"
+    
+    file_text += f"Total: {len(files)} files"
+    
+    keyboard = [[InlineKeyboardButton("🔙 Back to Management", callback_data=f"mgmt_course_{course_name.lower()}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(file_text, reply_markup=reply_markup, parse_mode="Markdown")
+    return MGMT_SELECT_TYPE
+
 
 async def back_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await admin_menu(update, context)
@@ -972,9 +1121,14 @@ admin_conv_handler = ConversationHandler(
                              CallbackQueryHandler(back_to_admin, pattern="^back_to_admin$")],
         MGMT_SELECT_WEEK: [CallbackQueryHandler(mgmt_select_type, pattern="^mgmt_week_|admin_manage_content")],
         MGMT_SELECT_TYPE: [CallbackQueryHandler(mgmt_ask_value, pattern="^mgmt_type_"),
+                             CallbackQueryHandler(mgmt_view_files, pattern="^mgmt_view_files$"),
                              CallbackQueryHandler(mgmt_select_week, pattern="^mgmt_course_"),
                              CallbackQueryHandler(back_to_admin, pattern="^back_to_admin$")],
         MGMT_ASK_VALUE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, mgmt_save_value),
+            MessageHandler(filters.Document.PDF, mgmt_save_document)
+        ],
+        MGMT_COLLECT_FILES: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, mgmt_save_value),
             MessageHandler(filters.Document.PDF, mgmt_save_document)
         ],
