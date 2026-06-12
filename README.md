@@ -13,7 +13,7 @@ A production-ready Python Telegram bot project.
 ```text
 cpp-telegram-bot/
 │
-├── app/
+├── app/ 
 │   ├── main.py        # Entry point
 │   ├── config.py      # Configuration logic
 │   ├── database.py    # DB connection/session
